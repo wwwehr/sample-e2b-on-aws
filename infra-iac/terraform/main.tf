@@ -55,7 +55,7 @@ locals {
   clusters = {
     # Server nodes run Consul and Nomad servers
     server = {
-      instance_type_x86    = var.environment == "prod" ? "m5.xlarge" : "t3.xlarge"
+      instance_type_x86    = var.environment == "prod" ? "m5.xlarge" : "t3.small"
       instance_type_arm    = var.environment == "prod" ? "m7g.xlarge" : "t4g.xlarge"
       desired_capacity = 3
       max_size         = 3
@@ -71,7 +71,7 @@ locals {
     }
     # API nodes run the API service
     api = {
-      instance_type_x86    = var.environment == "prod" ? "m6i.xlarge" : "t3.xlarge"
+      instance_type_x86    = var.environment == "prod" ? "m6i.xlarge" : "t3.small"
       instance_type_arm    = var.environment == "prod" ? "m7g.xlarge" : "t4g.xlarge"
       desired_capacity = 1
       max_size         = 1
@@ -605,6 +605,7 @@ resource "aws_launch_template" "client" {
     RUN_NOMAD_FILE_HASH          = local.file_hash["scripts/run-nomad.sh"]
     CONSUL_GOSSIP_ENCRYPTION_KEY = aws_secretsmanager_secret_version.consul_gossip_encryption_key.secret_string
     CONSUL_DNS_REQUEST_TOKEN     = aws_secretsmanager_secret_version.consul_dns_request_token.secret_string
+    DATA_VOLUME_SIZE_GB          = 500
   }))
 
   tag_specifications {

@@ -10,7 +10,7 @@ packer {
 
 source "amazon-ebs" "orch" {
   ami_name      = "e2b-ubuntu-ami-${formatdate("YYYY-MM-DD-hh-mm-ss", timestamp())}"
-  instance_type = var.architecture == "x86_64" ? "t3.xlarge" : "t4g.xlarge"
+  instance_type = var.architecture == "x86_64" ? "t3.small" : "t4g.xlarge"
   region        = var.aws_region
   vpc_id        = var.vpc_id
   subnet_id     = var.subnet_id

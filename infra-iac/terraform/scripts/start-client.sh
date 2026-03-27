@@ -42,6 +42,130 @@ echo "Detected IAM Role: $IAM_ROLE"
 
 
 
+# Robust EBS data volume discovery function
+# Uses multiple strategies to reliably find the secondary EBS volume
+discover_ebs_data_volume() {
+    local expected_size_bytes=$(( ${DATA_VOLUME_SIZE_GB} * 1073741824 )) # GB to bytes
+    local size_tolerance_bytes=$(( 2 * 1073741824 )) # 2GB tolerance
+    local min_size=$(( expected_size_bytes - size_tolerance_bytes ))
+    local max_size=$(( expected_size_bytes + size_tolerance_bytes ))
+
+    # Identify root device
+    local root_source
+    root_source=$(findmnt -n -o SOURCE /)
+    local root_dev
+    root_dev=$(lsblk -n -o PKNAME "$root_source" 2>/dev/null | head -1)
+    if [[ -z "$root_dev" ]]; then
+        root_dev=$(echo "$root_source" | sed 's|/dev/||; s/p[0-9]*$//; s/[0-9]*$//')
+    fi
+    echo "Root device identified as: /dev/$root_dev"
+
+    # Strategy 1: NVMe serial matching via EC2 API
+    echo "=== Strategy 1: EBS Volume ID matching ==="
+    local instance_id
+    instance_id=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" \
+        http://169.254.169.254/latest/meta-data/instance-id)
+    echo "Instance ID: $instance_id"
+
+    if [[ -n "$instance_id" ]]; then
+        local vol_id
+        vol_id=$(aws ec2 describe-instances \
+            --instance-ids "$instance_id" \
+            --query 'Reservations[0].Instances[0].BlockDeviceMappings[?DeviceName==`/dev/sda2`].Ebs.VolumeId' \
+            --output text --region "${AWS_REGION}" 2>/dev/null || true)
+        echo "Volume ID for /dev/sda2: $vol_id"
+
+        if [[ -n "$vol_id" && "$vol_id" != "None" ]]; then
+            # NVMe serial is volume ID without hyphen: vol-0abc1234 -> vol0abc1234
+            local nvme_serial=$${vol_id//-/}
+            echo "Looking for NVMe serial: $nvme_serial"
+
+            for dev in /dev/nvme*n1; do
+                if [[ -b "$dev" ]]; then
+                    local serial
+                    serial=$(nvme id-ctrl "$dev" 2>/dev/null | grep -i "sn" | awk '{print $3}' || true)
+                    if [[ "$serial" == "$nvme_serial" ]]; then
+                        echo "Strategy 1 SUCCESS: Found $dev with matching serial $serial"
+                        DISCOVERED_DISK="$dev"
+                        return 0
+                    fi
+                fi
+            done
+            echo "Strategy 1: No NVMe device matched volume serial"
+        else
+            echo "Strategy 1: Could not retrieve volume ID from EC2 API"
+        fi
+    fi
+
+    # Strategy 2: Size-based matching
+    echo "=== Strategy 2: Size-based matching ==="
+    echo "Looking for device with size ~${DATA_VOLUME_SIZE_GB}GB (range: $min_size - $max_size bytes)"
+    local candidates=()
+    while IFS= read -r line; do
+        local name size dtype
+        name=$(echo "$line" | awk '{print $1}')
+        size=$(echo "$line" | awk '{print $2}')
+        dtype=$(echo "$line" | awk '{print $3}')
+
+        [[ "$dtype" != "disk" ]] && continue
+        [[ "$name" == "$root_dev" ]] && continue
+
+        if [[ "$size" -ge "$min_size" && "$size" -le "$max_size" ]]; then
+            candidates+=("/dev/$name")
+            echo "  Candidate: /dev/$name (size: $size bytes)"
+        fi
+    done < <(lsblk -b -d -n -o NAME,SIZE,TYPE 2>/dev/null)
+
+    if [[ $${#candidates[@]} -eq 1 ]]; then
+        echo "Strategy 2 SUCCESS: Found exactly one matching device: $${candidates[0]}"
+        DISCOVERED_DISK="$${candidates[0]}"
+        return 0
+    elif [[ $${#candidates[@]} -gt 1 ]]; then
+        echo "Strategy 2: Multiple candidates found (ambiguous), skipping"
+    else
+        echo "Strategy 2: No devices matched expected size"
+    fi
+
+    # Strategy 3: /dev/disk/by-id symlink scan
+    echo "=== Strategy 3: /dev/disk/by-id symlink scan ==="
+    if [[ -d /dev/disk/by-id ]]; then
+        for link in /dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_*; do
+            [[ -L "$link" ]] || continue
+            # Skip partition symlinks
+            [[ "$link" =~ -part[0-9]+$ ]] && continue
+
+            local resolved
+            resolved=$(readlink -f "$link")
+            local resolved_name
+            resolved_name=$(basename "$resolved")
+
+            [[ "$resolved_name" == "$root_dev" ]] && continue
+            [[ "$resolved_name" == "$${root_dev}"* ]] && continue
+
+            local dev_size
+            dev_size=$(lsblk -b -d -n -o SIZE "$resolved" 2>/dev/null || true)
+            if [[ -n "$dev_size" && "$dev_size" -ge "$min_size" && "$dev_size" -le "$max_size" ]]; then
+                echo "Strategy 3 SUCCESS: Found $resolved via $link (size: $dev_size bytes)"
+                DISCOVERED_DISK="$resolved"
+                return 0
+            fi
+        done
+        echo "Strategy 3: No matching device found via /dev/disk/by-id"
+    else
+        echo "Strategy 3: /dev/disk/by-id directory not found"
+    fi
+
+    # All strategies failed
+    echo "ERROR: All EBS device discovery strategies failed!"
+    echo "=== Diagnostic dump ==="
+    lsblk -o NAME,SIZE,TYPE,MOUNTPOINT,SERIAL,MODEL 2>/dev/null || true
+    echo "Root device: /dev/$root_dev"
+    echo "Expected size: ${DATA_VOLUME_SIZE_GB}GB"
+    ls -la /dev/disk/by-id/ 2>/dev/null || true
+    echo "========================"
+    exit 1
+}
+
 # 使用 case 语句检查是否支持多盘 LVM
 USE_LVM=false
 case "$INSTANCE_TYPE" in
@@ -130,19 +254,15 @@ if [[ "$USE_LVM" == "true" ]]; then
         echo "Only 1 local NVMe device found, using it directly..."
         DISK="$${NVME_DEVICES[0]}"
     else
-        echo "No local NVMe devices found, falling back to EBS detection..."
-        DISK="/dev/nvme1n1"
+        echo "No local NVMe devices found, falling back to EBS discovery..."
+        discover_ebs_data_volume
+        DISK="$DISCOVERED_DISK"
     fi
 
 else
     echo "Instance type $INSTANCE_TYPE uses single disk mode..."
-    # For AWS EBS volumes, typically the device will be /dev/nvme1n1 or similar
-    DISK="/dev/nvme1n1"
-    # Check for NVMe device (AWS uses NVMe)
-    if [ ! -e "$DISK" ]; then
-        # Find the first attached EBS volume that's not the root volume
-        DISK=$(lsblk -o NAME,TYPE -n | grep -v 'part\|lvm' | grep -v "$(df -h / | tail -1 | awk '{print $1}' | sed 's/\/dev\///')" | head -1 | awk '{print "/dev/"$1}')
-    fi
+    discover_ebs_data_volume
+    DISK="$DISCOVERED_DISK"
 fi
 
 echo "Using disk: $DISK"

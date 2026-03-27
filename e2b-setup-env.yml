@@ -73,7 +73,7 @@ Parameters:
 
   # Client Cluster Configuration - Instance type for client nodes
   ClientInstanceType:
-    Description: "Instance type for client cluster nodes (must support nested virtualization, e.g. *.metal). Leave empty to use architecture default (x86: c5.metal, arm64: c7g.metal)."
+    Description: "Instance type for client cluster nodes (must support nested virtualization). Leave empty to use architecture default (x86: c8i.xlarge, arm64: c7g.metal)."
     Type: String
     Default: ""
 
@@ -833,7 +833,7 @@ Resources:
     Properties:
       InstanceType: !If
         - IsX64
-        - c6i.xlarge
+        - t3.nano
         - c7g.xlarge
       KeyName: !Ref KeyName
       MetadataOptions:
@@ -1118,7 +1118,7 @@ Outputs:
       - !Ref ClientInstanceType
       - !If
         - IsX64
-        - c5.metal
+        - c8i.xlarge
         - c7g.metal
     Export:
       Name: CFNCLIENTINSTANCETYPE
