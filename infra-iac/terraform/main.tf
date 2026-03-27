@@ -55,11 +55,11 @@ locals {
   clusters = {
     # Server nodes run Consul and Nomad servers
     server = {
-      instance_type_x86    = var.environment == "prod" ? "m5.xlarge" : "t3.small"
+      instance_type_x86    = var.environment == "prod" ? "m5.xlarge" : "t3.medium"
       instance_type_arm    = var.environment == "prod" ? "m7g.xlarge" : "t4g.xlarge"
-      desired_capacity = 3
-      max_size         = 3
-      min_size         = 3
+      desired_capacity = var.server_count
+      max_size         = var.server_count
+      min_size         = var.server_count
     }
     # Client nodes run workloads and containers
     client = {
@@ -71,7 +71,7 @@ locals {
     }
     # API nodes run the API service
     api = {
-      instance_type_x86    = var.environment == "prod" ? "m6i.xlarge" : "t3.small"
+      instance_type_x86    = var.environment == "prod" ? "m6i.xlarge" : "t3.xlarge"
       instance_type_arm    = var.environment == "prod" ? "m7g.xlarge" : "t4g.xlarge"
       desired_capacity = 1
       max_size         = 1
@@ -444,7 +444,7 @@ resource "aws_launch_template" "server" {
   }
 
   user_data = base64encode(templatefile("${path.module}/scripts/start-server.sh", {
-    NUM_SERVERS                  = 3
+    NUM_SERVERS                  = var.server_count
     CLUSTER_TAG_NAME             = "server-cluster"
     SCRIPTS_BUCKET               = aws_s3_bucket.setup_bucket.bucket
     NOMAD_TOKEN                  = aws_secretsmanager_secret_version.nomad_acl_token.secret_string

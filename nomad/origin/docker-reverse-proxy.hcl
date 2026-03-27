@@ -29,9 +29,9 @@ job "docker-reverse-proxy" {
       driver = "docker"
 
       resources {
-        memory_max = 2048
-        memory = 512
-        cpu    = 256
+        memory_max = 512
+        memory = 256
+        cpu    = 128
       }
 
       env {

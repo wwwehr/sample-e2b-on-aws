@@ -27,8 +27,9 @@ job "template-manager" {
       driver = "raw_exec"
 
       resources {
-        memory     = 1024
-        cpu        = 256
+        memory_max = 1024
+        memory     = 512
+        cpu        = 128
       }
 
       env {

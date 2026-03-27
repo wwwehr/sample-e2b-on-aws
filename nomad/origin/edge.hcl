@@ -57,9 +57,9 @@ job "client-proxy" {
       kill_signal  = "SIGTERM"
 
       resources {
-        memory_max = 4096
-        memory     = 1024
-        cpu        = 1000
+        memory_max = 1024
+        memory     = 512
+        cpu        = 500
       }
 
       env {

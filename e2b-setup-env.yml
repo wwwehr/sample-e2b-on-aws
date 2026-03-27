@@ -833,7 +833,7 @@ Resources:
     Properties:
       InstanceType: !If
         - IsX64
-        - t3.nano
+        - t3.small
         - c7g.xlarge
       KeyName: !Ref KeyName
       MetadataOptions:

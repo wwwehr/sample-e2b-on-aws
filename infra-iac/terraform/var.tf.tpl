@@ -73,6 +73,12 @@ variable "client_instance_type" {
   default     = "${CFNCLIENTINSTANCETYPE}"
 }
 
+variable "server_count" {
+  description = "Number of Consul/Nomad server nodes (1 or 3 for quorum)"
+  type        = number
+  default     = 3
+}
+
 variable "publicaccess" {
   description = "Specify whether public or private access to E2B"
   type        = string

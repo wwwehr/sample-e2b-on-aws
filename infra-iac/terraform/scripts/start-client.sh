@@ -280,9 +280,18 @@ sudo mkdir -p /orchestrator/sandbox
 sudo mkdir -p /orchestrator/template
 sudo mkdir -p /orchestrator/build
 
-# Add swapfile
+# Detect total RAM for auto-scaling swap and tmpfs
+TOTAL_RAM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+TOTAL_RAM_GB=$(( TOTAL_RAM_KB / 1024 / 1024 ))
+echo "Detected ${TOTAL_RAM_GB}GB total RAM"
+
+# Add swapfile (2x RAM, capped at 4-100GB)
 SWAPFILE="/swapfile"
-sudo fallocate -l 100G $SWAPFILE
+SWAP_SIZE_GB=$(( TOTAL_RAM_GB * 2 ))
+[ $SWAP_SIZE_GB -gt 100 ] && SWAP_SIZE_GB=100
+[ $SWAP_SIZE_GB -lt 4 ] && SWAP_SIZE_GB=4
+echo "Creating ${SWAP_SIZE_GB}GB swap file"
+sudo fallocate -l ${SWAP_SIZE_GB}G $SWAPFILE
 sudo chmod 600 $SWAPFILE
 sudo mkswap $SWAPFILE
 sudo swapon $SWAPFILE
@@ -294,10 +303,12 @@ echo "$SWAPFILE none swap sw 0 0" | sudo tee -a /etc/fstab
 sudo sysctl vm.swappiness=10
 sudo sysctl vm.vfs_cache_pressure=50
 
-# Add tmpfs for snapshotting
-# TODO: Parametrize this
+# Add tmpfs for snapshotting (25% of RAM, minimum 2GB)
+SNAPSHOT_CACHE_GB=$(( TOTAL_RAM_GB / 4 ))
+[ $SNAPSHOT_CACHE_GB -lt 2 ] && SNAPSHOT_CACHE_GB=2
+echo "Creating ${SNAPSHOT_CACHE_GB}GB snapshot cache tmpfs"
 sudo mkdir -p /mnt/snapshot-cache
-sudo mount -t tmpfs -o size=65G tmpfs /mnt/snapshot-cache
+sudo mount -t tmpfs -o size=${SNAPSHOT_CACHE_GB}G tmpfs /mnt/snapshot-cache
 
 ulimit -n 1048576
 export GOMAXPROCS='nproc'
