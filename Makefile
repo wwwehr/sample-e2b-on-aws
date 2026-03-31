@@ -242,7 +242,7 @@ copy-public-builds: create-buckets check-gsutil
 	@echo "Uploading from local storage to AWS S3..."
 	@echo "1. Uploading envd builds..."
 	if [ -n "$(ls -A ./tmp/public-builds/envd-v0.0.1 2>/dev/null)" ]; then \
-		aws s3 cp ./tmp/public-builds/envd-v0.0.1/envd-v0.0.1 s3://$(ENV_BUCKET)/envd-v0.0.1 --region $(AWS_REGION) || { echo "❌ Error uploading envd builds"; exit 1; }; \
+		aws s3 cp ./tmp/public-builds/envd-v0.0.1/envd-v0.0.1 s3://$(ENV_BUCKET)/envd --region $(AWS_REGION) || { echo "❌ Error uploading envd builds"; exit 1; }; \
 	else \
 		echo "⚠️ Warning: No envd builds to upload"; \
 	fi
@@ -263,7 +263,7 @@ copy-public-builds: create-buckets check-gsutil
 	
 	@echo "Verifying uploads..."
 	@echo "1. Checking envd builds..."
-	aws s3 ls --region $(AWS_REGION) s3://$(ENV_BUCKET)/envd-v0.0.1/ 2>/dev/null | head -5 || echo "⚠️ No envd builds found in destination bucket"
+	aws s3 ls --region $(AWS_REGION) s3://$(ENV_BUCKET)/envd 2>/dev/null | head -5 || echo "⚠️ No envd builds found in destination bucket"
 	
 	@echo "2. Checking kernel builds..."
 	aws s3 ls --region $(AWS_REGION) s3://$(KERNELS_BUCKET)/ 2>/dev/null | head -5 || echo "⚠️ No kernel builds found in destination bucket"

@@ -588,6 +588,9 @@ resource "aws_launch_template" "client" {
   network_interfaces {
     associate_public_ip_address = false
     security_groups             = [aws_security_group.client_sg.id]
+    # Required for Firecracker VM NAT networking - instances route traffic
+    # from sandbox network namespaces to the internet
+    source_dest_check = false
   }
 
   user_data = base64encode(templatefile("${path.module}/scripts/start-client.sh", {
@@ -1190,6 +1193,8 @@ resource "aws_launch_template" "build" {
   network_interfaces {
     associate_public_ip_address = false
     security_groups             = [aws_security_group.build_sg.id]
+    # Required for Firecracker VM NAT networking during template builds
+    source_dest_check = false
   }
 
   user_data = base64encode(templatefile("${path.module}/scripts/start-build-cluster.sh", {

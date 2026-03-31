@@ -2,24 +2,26 @@
 
 set -euo pipefail
 
-rm -rf linux
+# rm -rf linux
 
 function build_version {
   local version=$1
   echo "Starting build for kernel version: $version"
 
-  cp ../configs/"${version}.config" .config
-
   echo "Checking out repo for kernel at version: $version"
   git fetch --depth 1 origin "v${version}"
   git checkout FETCH_HEAD
+
+  echo "Applying kernel config for version: $version"
+  cp ../configs/"${version}.config" .config
+  make olddefconfig
 
   echo "Building kernel version: $version"
   make vmlinux -j "$(nproc)"
 
   echo "Copying finished build to builds directory"
-  mkdir -p "../builds/vmlinux-${version}"
-  cp vmlinux "../builds/vmlinux-${version}/vmlinux.bin"
+  mkdir -p "../builds/vmlinux-${version}" && \
+    cp vmlinux "../builds/vmlinux-${version}/vmlinux.bin"
 }
 
 echo "Cloning the linux kernel repository"
@@ -30,5 +32,5 @@ grep -v '^ *#' <../kernel_versions.txt | while IFS= read -r version; do
   build_version "$version"
 done
 
-cd ..
-rm -rf linux
+# cd ..
+# rm -rf linux

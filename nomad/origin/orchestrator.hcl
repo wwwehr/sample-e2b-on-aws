@@ -1,6 +1,7 @@
 job "orchestrator" {
   type = "system"
   datacenters = ["${aws_az1}", "${aws_az2}"]
+  node_pool = "default"
 
   priority = 90
 

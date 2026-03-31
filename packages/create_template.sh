@@ -1,12 +1,16 @@
 #!/bin/bash
+set -euo pipefail
 
-# Default Dockerfile
+# Defaults
 DOCKERFILE="FROM e2bdev/code-interpreter:latest"
 DOCKER_IMAGE="e2bdev/code-interpreter:latest"
 CREATE_TYPE="default"
 ECR_IMAGE=""
 START_COMMAND="/root/.jupyter/start-up.sh"
 READY_COMMAND=""
+ALIAS="template-$(date +%s)"
+MEMORY_MB=4096
+CPU_COUNT=4
 
 # Parse command line arguments
 while [ $# -gt 0 ]; do
@@ -16,7 +20,7 @@ while [ $# -gt 0 ]; do
                 START_COMMAND=""
                 DOCKERFILE=$(cat "$2")
                 CREATE_TYPE="dockerfile"
-                echo "Will use below Dockerfile to create template: $DOCKERFILE"
+                echo "Using Dockerfile: $2"
                 shift 2
             else
                 echo "Error: Dockerfile $2 not found"
@@ -28,214 +32,171 @@ while [ $# -gt 0 ]; do
             ECR_IMAGE="$2"
             DOCKERFILE="FROM $2"
             CREATE_TYPE="ecr_image"
-            echo "Will use below ECR Image to create template: $ECR_IMAGE"
+            echo "Using ECR image: $ECR_IMAGE"
+            shift 2
+            ;;
+        --alias)
+            ALIAS="$2"
+            shift 2
+            ;;
+        --memory)
+            MEMORY_MB="$2"
+            shift 2
+            ;;
+        --cpus)
+            CPU_COUNT="$2"
+            shift 2
+            ;;
+        --start-cmd)
+            START_COMMAND="$2"
+            shift 2
+            ;;
+        --ready-cmd)
+            READY_COMMAND="$2"
             shift 2
             ;;
         *)
-            echo "Unknown parameter: $1"
-            echo "Usage: $0 [--docker-file <dockerfile-path>] [--ecr-image <ecr-image-uri>]"
+            echo "Usage: $0 [OPTIONS]"
+            echo "  --docker-file <path>    Build from a Dockerfile"
+            echo "  --ecr-image <uri>       Use an existing ECR image"
+            echo "  --alias <name>          Template alias (default: template-<timestamp>)"
+            echo "  --memory <MB>           Memory in MB (default: 4096)"
+            echo "  --cpus <count>          CPU count (default: 4)"
+            echo "  --start-cmd <cmd>       Start command"
+            echo "  --ready-cmd <cmd>       Ready command"
             exit 1
             ;;
     esac
 done
 
+# Require jq
+if ! command -v jq &> /dev/null; then
+    echo "Error: jq is required. Install with: apt-get install -y jq"
+    exit 1
+fi
+
 # Change to the directory of the script
 cd "$(dirname "$0")"
 
-# Read parameters from /opt/config.properties
-if [ -f /opt/config.properties ]; then
-    # Use grep to extract variables
-    AWSREGION=$(grep -E "^AWSREGION=" /opt/config.properties | cut -d'=' -f2)
-    CFNDOMAIN=$(grep -E "^CFNDOMAIN=" /opt/config.properties | cut -d'=' -f2)
-    
-    echo "Found AWSREGION: $AWSREGION"
-    echo "Found CFNDOMAIN: $CFNDOMAIN"
-else
-    echo "Error: Configuration file /opt/config.properties not found"
+# Read config
+if [ ! -f /opt/config.properties ]; then
+    echo "Error: /opt/config.properties not found"
     exit 1
 fi
+AWSREGION=$(grep -E "^AWSREGION=" /opt/config.properties | cut -d'=' -f2)
+CFNDOMAIN=$(grep -E "^CFNDOMAIN=" /opt/config.properties | cut -d'=' -f2)
+echo "Region: $AWSREGION, Domain: $CFNDOMAIN"
 
-# Read JSON configuration from ./../infra-iac/initdb/config.json
 CONFIG_FILE="./../infra-iac/db/config.json"
-if [ -f "$CONFIG_FILE" ]; then
-    # Check if jq is installed
-    if command -v jq &> /dev/null; then
-        ACCESS_TOKEN=$(jq -r '.accessToken' "$CONFIG_FILE")
-    else
-        # Fallback to grep and sed if jq is not available
-        ACCESS_TOKEN=$(grep -o '"accessToken": *"[^"]*"' "$CONFIG_FILE" | sed 's/"accessToken": *"\([^"]*\)"/\1/')
-    fi
-    
-    echo "Found accessToken: $ACCESS_TOKEN"
-else
-    echo "Error: Configuration file $CONFIG_FILE not found"
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "Error: $CONFIG_FILE not found"
     exit 1
 fi
+ACCESS_TOKEN=$(jq -r '.accessToken' "$CONFIG_FILE")
 
-# Make the POST request
-echo "Making POST request to https://api.$CFNDOMAIN/templates with token $ACCESS_TOKEN"
+# Build JSON payload with proper escaping
+JSON_PAYLOAD=$(jq -n \
+    --arg dockerfile "$DOCKERFILE" \
+    --arg startCmd "$START_COMMAND" \
+    --arg readyCmd "$READY_COMMAND" \
+    --arg alias "$ALIAS" \
+    --argjson memoryMB "$MEMORY_MB" \
+    --argjson cpuCount "$CPU_COUNT" \
+    '{
+        dockerfile: $dockerfile,
+        startCmd: $startCmd,
+        readyCmd: $readyCmd,
+        alias: $alias,
+        memoryMB: $memoryMB,
+        cpuCount: $cpuCount
+    }')
 
+echo "Creating template..."
 RESPONSE=$(curl -s -X POST \
- "https://api.$CFNDOMAIN/templates" \
- -H "Authorization: $ACCESS_TOKEN" \
- -H 'Content-Type: application/json' \
- -d "{
- \"readyCmd\": \"$READY_COMMAND\",
- \"startCmd\": \"$START_COMMAND\",
- \"dockerfile\": \"$DOCKERFILE\",
- \"alias\": \"test-$(date +%s)\",
- \"memoryMB\": 4096,
- \"cpuCount\": 4
- }")
+    "https://api.$CFNDOMAIN/templates" \
+    -H "Authorization: $ACCESS_TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d "$JSON_PAYLOAD")
 
- echo "Response: $RESPONSE"
+BUILD_ID=$(echo "$RESPONSE" | jq -r '.buildID')
+TEMPLATE_ID=$(echo "$RESPONSE" | jq -r '.templateID')
 
-# Extract buildID and templateID from response
-if command -v jq &> /dev/null; then
-    BUILD_ID=$(echo "$RESPONSE" | jq -r '.buildID')
-    TEMPLATE_ID=$(echo "$RESPONSE" | jq -r '.templateID')
-else
-    # Fallback to grep and sed if jq is not available
-    BUILD_ID=$(echo "$RESPONSE" | grep -o '"buildID": *"[^"]*"' | sed 's/"buildID": *"\([^"]*\)"/\1/')
-    TEMPLATE_ID=$(echo "$RESPONSE" | grep -o '"templateID": *"[^"]*"' | sed 's/"templateID": *"\([^"]*\)"/\1/')
+if [ "$BUILD_ID" = "null" ] || [ "$TEMPLATE_ID" = "null" ]; then
+    echo "Error: Failed to create template. Response:"
+    echo "$RESPONSE" | jq .
+    exit 1
 fi
 
-echo "Response received:"
-echo "$RESPONSE"
-echo ""
-echo "Template creating information:"
-echo "buildID: $BUILD_ID"
-echo "templateID: $TEMPLATE_ID"
+echo "Template ID: $TEMPLATE_ID"
+echo "Build ID:    $BUILD_ID"
 
-# Get AWS account ID
+# ECR setup
 AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-if [ $? -ne 0 ]; then
-    echo "Error: Failed to get AWS account ID"
-    exit 1
-fi
-echo "AWS Account ID: $AWS_ACCOUNT_ID"
-
-# Execute ECR login command
-echo "Logging in to ECR..."
 ECR_DOMAIN="$AWS_ACCOUNT_ID.dkr.ecr.$AWSREGION.amazonaws.com"
-aws ecr get-login-password --region $AWSREGION | docker login --username AWS --password-stdin $ECR_DOMAIN
-if [ $? -ne 0 ]; then
-    echo "Error: Failed to login to ECR"
-    exit 1
-fi
 
-# Create base ECR repository
-echo "Creating ECR repository e2bdev/base/$TEMPLATE_ID..."
-aws ecr create-repository --repository-name e2bdev/base/$TEMPLATE_ID --region $AWSREGION || true
-if [ $? -ne 0 ]; then
-    echo "Note: Repository may already exist or there was an error"
-fi
+echo "Logging in to ECR..."
+aws ecr get-login-password --region "$AWSREGION" | docker login --username AWS --password-stdin "$ECR_DOMAIN"
 
-# Handle different create types
+echo "Creating ECR repository..."
+aws ecr create-repository --repository-name "e2bdev/base/$TEMPLATE_ID" --region "$AWSREGION" 2>/dev/null || true
+
+# Build/pull Docker image
 case "$CREATE_TYPE" in
     "dockerfile")
-        # Create a temporary directory for Docker build
         TEMP_DIR=$(mktemp -d)
         echo "$DOCKERFILE" > "$TEMP_DIR/Dockerfile"
-        
         echo "Building Docker image from Dockerfile..."
-        docker build -t temp_image "$TEMP_DIR"
-        if [ $? -ne 0 ]; then
-            echo "Error: Failed to build Docker image from Dockerfile"
-            rm -rf "$TEMP_DIR"
-            exit 1
-        fi
+        docker build -t "template-build-$TEMPLATE_ID" "$TEMP_DIR"
         rm -rf "$TEMP_DIR"
-        BASE_IMAGE="temp_image"
+        BASE_IMAGE="template-build-$TEMPLATE_ID"
         ;;
-        
     "ecr_image")
         echo "Pulling ECR image $ECR_IMAGE..."
-        docker pull $ECR_IMAGE
-        if [ $? -ne 0 ]; then
-            echo "Error: Failed to pull ECR image $ECR_IMAGE"
-            exit 1
-        fi
-        BASE_IMAGE=$ECR_IMAGE
+        docker pull "$ECR_IMAGE"
+        BASE_IMAGE="$ECR_IMAGE"
         ;;
-        
     "default")
-        echo "Pulling default Docker image $DOCKER_IMAGE..."
-        docker pull $DOCKER_IMAGE
-        if [ $? -ne 0 ]; then
-            echo "Error: Failed to pull $DOCKER_IMAGE Docker image"
-            exit 1
-        fi
-        BASE_IMAGE=$DOCKER_IMAGE
-        ;;
-        
-    *)
-        echo "Error: Unknown CREATE_TYPE: $CREATE_TYPE"
-        exit 1
+        echo "Pulling default image $DOCKER_IMAGE..."
+        docker pull "$DOCKER_IMAGE"
+        BASE_IMAGE="$DOCKER_IMAGE"
         ;;
 esac
 
-# Tag and push the base image
+# Tag and push
 BASE_ECR_REPOSITORY="$ECR_DOMAIN/e2bdev/base/$TEMPLATE_ID:$BUILD_ID"
-echo "Tagging base Docker image as $BASE_ECR_REPOSITORY..."
-docker tag $BASE_IMAGE $BASE_ECR_REPOSITORY
-if [ $? -ne 0 ]; then
-    echo "Error: Failed to tag base Docker image"
-    exit 1
-fi
+echo "Pushing to $BASE_ECR_REPOSITORY..."
+docker tag "$BASE_IMAGE" "$BASE_ECR_REPOSITORY"
+docker push "$BASE_ECR_REPOSITORY"
 
-echo "Pushing base Docker image to ECR..."
-docker push $BASE_ECR_REPOSITORY
-if [ $? -ne 0 ]; then
-    echo "Error: Failed to push base Docker image to ECR"
-    exit 1
-fi
+# Notify API
+echo "Notifying API that build is ready..."
+curl -s -X POST \
+    "https://api.$CFNDOMAIN/templates/$TEMPLATE_ID/builds/$BUILD_ID" \
+    -H "Authorization: $ACCESS_TOKEN" \
+    -H 'Content-Type: application/json' | jq .
 
-echo "Docker images successfully pushed to ECR:"
-echo "Base image: $BASE_ECR_REPOSITORY"
-
-# Notify the API that the build is complete
-echo "Notifying API that the build is complete..."
-BUILD_COMPLETE_RESPONSE=$(curl -s -X POST \
-  "https://api.$CFNDOMAIN/templates/$TEMPLATE_ID/builds/$BUILD_ID" \
-  -H "Authorization: $ACCESS_TOKEN" \
-  -H 'Content-Type: application/json')
-
-echo "Build completion notification response:"
-echo "$BUILD_COMPLETE_RESPONSE"
-
-# Poll build status every 10 seconds until it's no longer "building"
-echo "Polling build status every 10 seconds until completion..."
+# Poll build status
+echo "Polling build status..."
 while true; do
-    FINAL_BUILD_STATUS_RESPONSE=$(curl -s \
-      "https://api.$CFNDOMAIN/templates/$TEMPLATE_ID/builds/$BUILD_ID/status" \
-      -H "Authorization: $ACCESS_TOKEN")
-    
-    # Extract status value
-    if command -v jq &> /dev/null; then
-        STATUS=$(echo "$FINAL_BUILD_STATUS_RESPONSE" | jq -r '.status')
-    else
-        # Fallback to grep and sed if jq is not available
-        STATUS=$(echo "$FINAL_BUILD_STATUS_RESPONSE" | grep -o '"status": *"[^"]*"' | sed 's/"status": *"\([^"]*\)"/\1/')
-    fi
-    
-    echo "Current building status: $STATUS"
+    STATUS=$(curl -s \
+        "https://api.$CFNDOMAIN/templates/$TEMPLATE_ID/builds/$BUILD_ID/status" \
+        -H "Authorization: $ACCESS_TOKEN" | jq -r '.status')
 
-    if [ "$STATUS" != "building" ]; then
-        echo "Build is no longer in 'building' state. Final status: $STATUS"
+    echo "Status: $STATUS"
+
+    if [ "$STATUS" != "building" ] && [ "$STATUS" != "waiting" ]; then
         break
     fi
-
     sleep 10
 done
 
-# Check final build status
 if [ "$STATUS" = "error" ] || [ "$STATUS" = "failed" ]; then
-    echo "Building failed with status: $STATUS"
+    echo "Build failed with status: $STATUS"
     exit 1
 elif [ "$STATUS" = "ready" ] || [ "$STATUS" = "success" ]; then
-    echo "Building completed successfully!"
+    echo "Build completed successfully!"
+    echo "Template ID: $TEMPLATE_ID"
 else
-    echo "Building finished with unknown status: $STATUS"
+    echo "Build finished with unexpected status: $STATUS"
     exit 1
 fi
